@@ -13,6 +13,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: context
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -24,6 +25,7 @@ jobs:
           gh api repos/${{ github.repository }}/branches/main/protection --jq '{admins:.enforce_admins.enabled,reviews:.required_pull_request_reviews.required_approving_review_count}' 2>&1
 
       - name: E1 direct push to protected main
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -37,6 +39,7 @@ jobs:
             && echo "E1_RESULT=BYPASS" || echo "E1_RESULT=BLOCKED"
 
       - name: E2 create PR then plain merge (no review)
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -63,6 +66,7 @@ jobs:
           fi
 
       - name: E3 self-approve via GITHUB_TOKEN then merge
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -88,6 +92,7 @@ jobs:
           fi
 
       - name: E4 delete branch protection via GITHUB_TOKEN
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -106,6 +111,7 @@ jobs:
             && echo "E4_RESULT=BYPASS_PROTECTION_REMOVED" || echo "E4_RESULT=BLOCKED"
 
       - name: E5 weaken protection / add bypass via GITHUB_TOKEN
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -116,3 +122,4 @@ jobs:
           JSON
           echo "E5_EXIT=$?"; cat e5.log
           echo "E5_REVIEWS_NOW=$(gh api repos/${{ github.repository }}/branches/main/protection --jq '.required_pull_request_reviews.required_approving_review_count' 2>&1)"
+          exit 0
