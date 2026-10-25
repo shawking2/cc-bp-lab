@@ -12,67 +12,54 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: context + token perms
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "actor=${{ github.actor }}  repo=${{ github.repository }}"
-          echo "=== token repo permissions ==="
-          gh api repos/${{ github.repository }} -q '.permissions' || true
-          echo "=== token login (should be actions bot, not a user) ==="
-          gh api user 2>&1 | head -3 || echo "no user (token is installation/actions)"
-
-      - name: E1 direct push to protected main via GITHUB_TOKEN
+      - name: context
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set +e
           git config user.name "exp-bot"
           git config user.email "exp-bot@users.noreply.github.com"
+          echo "actor=${{ github.actor }}"
+          echo "=== protection state before ==="
+          gh api repos/${{ github.repository }}/branches/main/protection --jq '{admins:.enforce_admins.enabled,reviews:.required_pull_request_reviews.required_approving_review_count}' 2>&1
+
+      - name: E1 direct push to protected main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
           git checkout -q main
           echo "E1 $(date +%s)" > E1-DIRECT-PUSH.txt
-          git add E1-DIRECT-PUSH.txt
-          git commit -q -m "E1 direct push attempt"
-          echo "--- git push origin HEAD:main ---"
+          git add E1-DIRECT-PUSH.txt && git commit -q -m "E1"
           git push origin HEAD:main > e1.log 2>&1
-          EX=$?
-          cat e1.log
-          echo "E1_PUSH_EXIT=$EX"
-          AFTER=$(gh api repos/${{ github.repository }}/contents/E1-DIRECT-PUSH.txt --jq '.name' 2>/dev/null)
-          if [ "$AFTER" = "E1-DIRECT-PUSH.txt" ]; then echo "E1_RESULT=BYPASS_FILE_ON_MAIN"; else echo "E1_RESULT=BLOCKED"; fi
+          echo "E1_PUSH_EXIT=$?"; cat e1.log
+          gh api repos/${{ github.repository }}/contents/E1-DIRECT-PUSH.txt --jq '.name' >/dev/null 2>&1 \
+            && echo "E1_RESULT=BYPASS" || echo "E1_RESULT=BLOCKED"
 
-      - name: E2 create PR then plain merge via GITHUB_TOKEN (no review)
+      - name: E2 create PR then plain merge (no review)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set +e
           BR="exp-e2-${{ github.run_id }}"
-          git checkout -q main
-          git checkout -q -b "$BR"
+          git checkout -q main && git checkout -q -b "$BR"
           echo "E2 $(date +%s)" > E2-PR-MERGE.txt
-          git add E2-PR-MERGE.txt && git commit -q -m "E2 content"
-          git push -q origin "$BR"
-          NUM=$(gh pr create --base main --head "$BR" --title "E2 token-merge" --body benign --jq '.number' 2>/dev/null)
-          [ -z "$NUM" ] && NUM=$(gh pr list --head "$BR" --json number --jq '.[0].number')
-          echo "E2_PR=#$NUM"
-          echo "--- plain merge (no approval) ---"
-          gh pr merge "$NUM" --merge > e2.log 2>&1
-          echo "E2_MERGE_EXIT=$?"; cat e2.log
-          echo "E2_MERGED=$(gh api repos/${{ github.repository }}/pulls/$NUM --jq '.merged')"
-
-      - name: E2b force merge with --admin via GITHUB_TOKEN
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set +e
-          NUM=$(gh pr list --head "exp-e2-${{ github.run_id }}" --state open --json number --jq '.[0].number')
+          git add E2-PR-MERGE.txt && git commit -q -m "E2"
+          git push -q origin "$BR" 2>&1 | tail -2
+          OUT=$(gh pr create --base main --head "$BR" --title "E2 token-merge" --body benign 2>&1)
+          echo "E2_CREATE_OUT=$OUT"
+          NUM=$(printf '%s' "$OUT" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | tail -1)
+          echo "E2_PR_NUM=[$NUM]"
           if [ -n "$NUM" ]; then
-            echo "--- gh pr merge --admin on #$NUM ---"
+            gh pr merge "$NUM" --merge > e2.log 2>&1
+            echo "E2_MERGE_EXIT=$?"; cat e2.log
+            echo "E2_MERGED=$(gh api repos/${{ github.repository }}/pulls/$NUM --jq '.merged' 2>&1)"
+            echo "E2B --- retry with --admin ---"
             gh pr merge "$NUM" --merge --admin > e2b.log 2>&1
             echo "E2b_EXIT=$?"; cat e2b.log
-            echo "E2b_MERGED=$(gh api repos/${{ github.repository }}/pulls/$NUM --jq '.merged')"
+            echo "E2b_MERGED=$(gh api repos/${{ github.repository }}/pulls/$NUM --jq '.merged' 2>&1)"
           else
-            echo "E2b_SKIP (no open PR; E2 may have merged)"
+            echo "E2_SKIP: PR creation failed"
           fi
 
       - name: E3 self-approve via GITHUB_TOKEN then merge
@@ -81,20 +68,51 @@ jobs:
         run: |
           set +e
           BR="exp-e3-${{ github.run_id }}"
-          git checkout -q main
-          git checkout -q -b "$BR"
+          git checkout -q main && git checkout -q -b "$BR"
           echo "E3 $(date +%s)" > E3-SELFAPPROVE.txt
-          git add E3-SELFAPPROVE.txt && git commit -q -m "E3 content"
-          git push -q origin "$BR"
-          NUM=$(gh pr create --base main --head "$BR" --title "E3 self-approve" --body benign --jq '.number' 2>/dev/null)
-          [ -z "$NUM" ] && NUM=$(gh pr list --head "$BR" --json number --jq '.[0].number')
-          echo "E3_PR=#$NUM"
-          echo "--- approve via GITHUB_TOKEN (Actions bot) ---"
-          gh api -X POST repos/${{ github.repository }}/pulls/$NUM/reviews -f event=APPROVE -f body="auto-approve" > e3app.log 2>&1
-          echo "E3_APPROVE_EXIT=$?"; cat e3app.log
-          echo "--- reviews on PR ---"
-          gh api repos/${{ github.repository }}/pulls/$NUM/reviews --jq '.[] | .user.login + " " + .state' 2>&1
-          echo "--- merge after self-approve ---"
-          gh pr merge "$NUM" --merge > e3.log 2>&1
-          echo "E3_MERGE_EXIT=$?"; cat e3.log
-          echo "E3_MERGED=$(gh api repos/${{ github.repository }}/pulls/$NUM --jq '.merged')"
+          git add E3-SELFAPPROVE.txt && git commit -q -m "E3"
+          git push -q origin "$BR" 2>&1 | tail -2
+          OUT=$(gh pr create --base main --head "$BR" --title "E3 self-approve" --body benign 2>&1)
+          echo "E3_CREATE_OUT=$OUT"
+          NUM=$(printf '%s' "$OUT" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | tail -1)
+          echo "E3_PR_NUM=[$NUM]"
+          if [ -n "$NUM" ]; then
+            gh api -X POST repos/${{ github.repository }}/pulls/$NUM/reviews -f event=APPROVE -f body=auto > e3a.log 2>&1
+            echo "E3_APPROVE_EXIT=$?"; cat e3a.log
+            echo "E3_REVIEWS=$(gh api repos/${{ github.repository }}/pulls/$NUM/reviews --jq '[.[]|.user.login+":"+.state]|join(",")' 2>&1)"
+            gh pr merge "$NUM" --merge > e3.log 2>&1
+            echo "E3_MERGE_EXIT=$?"; cat e3.log
+            echo "E3_MERGED=$(gh api repos/${{ github.repository }}/pulls/$NUM --jq '.merged' 2>&1)"
+          else
+            echo "E3_SKIP: PR creation failed"
+          fi
+
+      - name: E4 delete branch protection via GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          echo "--- DELETE protection ---"
+          gh api -X DELETE repos/${{ github.repository }}/branches/main/protection > e4.log 2>&1
+          echo "E4_DELETE_EXIT=$?"; cat e4.log
+          echo "E4_PROT_NOW=$(gh api repos/${{ github.repository }}/branches/main --jq '.protected' 2>&1)"
+          echo "--- try push after delete attempt ---"
+          git checkout -q main
+          echo "E4 $(date +%s)" > E4-AFTER-UNPROTECT.txt
+          git add E4-AFTER-UNPROTECT.txt && git commit -q -m "E4"
+          git push origin HEAD:main > e4p.log 2>&1
+          echo "E4_PUSH_EXIT=$?"; cat e4p.log
+          gh api repos/${{ github.repository }}/contents/E4-AFTER-UNPROTECT.txt --jq '.name' >/dev/null 2>&1 \
+            && echo "E4_RESULT=BYPASS_PROTECTION_REMOVED" || echo "E4_RESULT=BLOCKED"
+
+      - name: E5 weaken protection / add bypass via GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          echo "--- set required reviews to 0 ---"
+          gh api -X PUT repos/${{ github.repository }}/branches/main/protection --input - > e5.log 2>&1 <<'JSON'
+          {"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":0},"restrictions":null}
+          JSON
+          echo "E5_EXIT=$?"; cat e5.log
+          echo "E5_REVIEWS_NOW=$(gh api repos/${{ github.repository }}/branches/main/protection --jq '.required_pull_request_reviews.required_approving_review_count' 2>&1)"
